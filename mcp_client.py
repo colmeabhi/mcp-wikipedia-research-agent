@@ -115,6 +115,64 @@ async def handle_resource(session, command):
     except Exception as e:
         print("Resource fetch failed:", e)
 
+async def list_prompts(session):
+    prompt_response = await session.list_prompts()
+
+    if not prompt_response or not prompt_response.prompts:
+        print("No prompts found on the server.")
+        return
+
+    print("\nAvailable Prompts and Argument Structure:")
+    for p in prompt_response.prompts:
+        print(f"\nPrompt: {p.name}")
+        if p.arguments:
+            for arg in p.arguments:
+                print(f"  - {arg.name}")
+        else:
+            print("  - No arguments required.")
+    print("\nUse: /prompt <prompt_name> \"arg1\" \"arg2\" ...")
+
+
+async def handle_prompt(session, tools, command, agent):
+    parts = shlex.split(command.strip())
+    if len(parts) < 2:
+        print("Usage: /prompt <name> \"args>\"")
+        return
+
+    prompt_name = parts[1]
+    args = parts[2:]
+
+    try:
+        # Get available prompts
+        prompt_def = await session.list_prompts()
+        match = next((p for p in prompt_def.prompts if p.name == prompt_name), None)
+        if not match:
+            print(f"Prompt '{prompt_name}' not found.")
+            return
+
+        # Check arg count
+        if len(args) != len(match.arguments):
+            expected = ", ".join([a.name for a in match.arguments])
+            print(f"Expected {len(match.arguments)} arguments: {expected}")
+            return
+
+        # Build argument dict
+        arg_values = {arg.name: val for arg, val in zip(match.arguments, args)}
+        response = await session.get_prompt(prompt_name, arg_values)
+        prompt_text = response.messages[0].content.text
+        
+        # Execute the prompt via the agent
+        agent_response = await agent.ainvoke(
+            {"messages": [HumanMessage(content=prompt_text)]},
+            config={"configurable": {"thread_id": "wiki-session"}}
+        )
+        print("\n=== Prompt Result ===")
+        print(agent_response["messages"][-1].content)
+
+    except Exception as e:
+        print("Prompt invocation failed:", e)
+
+
 # Entry point
 async def main():
     async with stdio_client(server_params) as (read, write):
@@ -125,6 +183,8 @@ async def main():
 
             print("Wikipedia MCP agent is ready.")
             print("Type a question or use the following templates:")
+            print("  /prompts                - to list available prompts")
+            print("  /prompt <name> \"args\"   - to run a specific prompt")
             print("  /resources              - to list available resources")
             print("  /resource <name>        - to run a specific resource")
 
@@ -132,6 +192,12 @@ async def main():
                 user_input = input("\nYou: ").strip()
                 if user_input.lower() in {"exit", "quit", "q"}:
                     break
+                elif user_input.startswith("/prompts"):
+                    await list_prompts(session)
+                    continue
+                elif user_input.startswith("/prompt"):
+                    await handle_prompt(session, tools, user_input, agent)
+                    continue
                 elif user_input.startswith("/resources"):
                     await list_resources(session)
                     continue
